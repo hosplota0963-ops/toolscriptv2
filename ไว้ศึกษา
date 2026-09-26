@@ -1,0 +1,185 @@
+--- รวมโค้ดและเครื่องมือที่แกะมาจาก Chilli Hub (ที่ Lucy ไม่มี) ---
+-- จัดทำเพื่อให้สามารถนำไปประยุกต์ใส่สคริปต์ตัวเองได้ง่ายๆ พร้อมคำอธิบายแบบละเอียดยิบ
+
+==================================================
+1. ระบบสแกนหาอาวุธ (ไม้ตี) และรีโมทที่ใช้ตี (Weapon Scan & Combat Remote)
+==================================================
+ใน Chilli Hub จะไม่ได้แค่ดูชื่อ Tool ตรงๆ แต่จะเช็คลงลึกไปถึง Attribute ของ Tool ด้วย
+คำที่สคริปต์ใช้ค้นหาอาวุธ: "bat", "katana", "axe", "staff", "club", "hammer", "sword", "blade"
+
+-- โค้ดดึงรีโมทตี
+local networking = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
+local batSwingRemote = networking:FindFirstChild("RE/BatSwing/Trigger")
+local toolTriggerRemote = networking:FindFirstChild("RE/ToolTrigger/Trigger")
+
+-- ฟังก์ชันเช็คว่าเป็นอาวุธหรือไม่
+local function IsBatTool(tool)
+    if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
+        return false
+    end
+    -- วิธีที่ 1: เช็คจาก Attribute โดยตรง (เกมมักจะแปะไว้ให้)
+    if tool:GetAttribute("IsBat") == true then
+        return true
+    end
+    -- วิธีที่ 2: เช็คจากชื่อ GearName
+    local gearName = tool:GetAttribute("GearName")
+    if type(gearName) == "string" then
+        gearName = string.lower(gearName)
+        local weaponKeywords = {"bat", "katana", "axe", "staff", "club", "hammer", "sword", "blade"}
+        for _, keyword in ipairs(weaponKeywords) do
+            if string.find(gearName, keyword, 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- ฟังก์ชันค้นหาอาวุธในตัวและกระเป๋า
+local function FindBat(player)
+    -- หาในตัวละครที่ถืออยู่ก่อน
+    local charTool = player.Character and player.Character:FindFirstChildWhichIsA("Tool")
+    if charTool and IsBatTool(charTool) then return charTool end
+    
+    -- ถ้าไม่ได้ถือ ให้หาในกระเป๋า (Backpack)
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if IsBatTool(tool) then return tool end
+        end
+    end
+    return nil
+end
+
+-- วิธีใช้งานรีโมทตี (FireServer)
+-- batSwingRemote:FireServer(พารามิเตอร์ของเกม เช่น CFrame, Hitbox ฯลฯ)
+
+
+==================================================
+2. ระบบวิ่งไว (WalkSpeed Bypass / Humanoid Swap)
+==================================================
+เกมมักจะมี Anti-Cheat คอยตรวจจับค่า WalkSpeed และ JumpPower ของ Humanoid 
+Chilli Hub ใช้วิธีที่เรียกว่า "Humanoid Swap" หรือการโคลนร่างและสลับ Humanoid เพื่อหลอกสคริปต์ตรวจสอบ (Monitor Disable)
+
+-- โค้ดโคลนและสลับ Humanoid
+local function BypassWalkSpeed(character)
+    local oldHumanoid = character:FindFirstChildOfClass("Humanoid")
+    if not oldHumanoid or oldHumanoid.Health <= 0 then return end
+    
+    -- ทำการ Clone ตัวเก่าออกมา
+    local newHumanoid = oldHumanoid:Clone()
+    
+    -- ตัดตัวเก่าออกจาก Character
+    oldHumanoid.Parent = nil 
+    
+    -- เอาตัวใหม่ยัดเข้าไปแทนที่
+    newHumanoid.Parent = character
+    
+    -- อัปเดตมุมกล้องให้จับไปที่ Humanoid ตัวใหม่
+    workspace.CurrentCamera.CameraSubject = newHumanoid
+    
+    -- เชื่อมต่อคอนโทรลเลอร์ (PlayerScripts) ของผู้เล่นให้ใช้ Humanoid ตัวใหม่ (จำเป็นมากไม่งั้นเดินไม่ได้)
+    pcall(function()
+        local playerScripts = game.Players.LocalPlayer:FindFirstChild("PlayerScripts")
+        if playerScripts then
+            local controlModule = require(playerScripts:WaitForChild("PlayerModule")):GetControls()
+            if controlModule then
+                controlModule.humanoid = newHumanoid
+            end
+        end
+    end)
+    
+    -- ป้องกันระบบสั่งตายเมื่อข้อต่อหลุด (Anti-Death)
+    newHumanoid.BreakJointsOnDeath = false
+    newHumanoid.RequiresNeck = false
+    newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+    
+    return newHumanoid
+end
+
+
+==================================================
+3. การดึงภาพ/ไอคอน จากเกมมาใส่ UI (UI Image Extraction)
+==================================================
+หากต้องการทำ ESP ไข่หรือไอเทม การเอา "id ภาพ" มาใส่ `ImageLabel` ใน UI ต้องใช้ฟอร์แมต `rbxassetid://` เสมอ
+Chilli Hub ใช้วิธีเจาะลึกเข้าไปใน Model ของสิ่งของเพื่อหา Texture แท้ๆ
+
+-- โค้ดดึงภาพสำหรับใช้กับ ImageLabel ใน BillboardGui (ESP)
+local function GetIconForUI(itemModel)
+    local iconId = nil
+    
+    -- 1. ลองหาจาก Attribute ยอดฮิตก่อน
+    local attrNames = {"Icon", "IconId", "AssetId", "Image", "ImageId", "Thumbnail", "TextureId"}
+    for _, attrName in ipairs(attrNames) do
+        local attrValue = itemModel:GetAttribute(attrName)
+        if attrValue and tostring(attrValue) ~= "" then
+            iconId = attrValue
+            break
+        end
+    end
+    
+    -- 2. ถ้าใน Attribute ไม่มี ให้มุดลงไปหาใน Part ต่างๆ ของ Model
+    if not iconId then
+        for _, obj in ipairs(itemModel:GetDescendants()) do
+            if obj:IsA("Decal") or obj:IsA("Texture") then 
+                iconId = obj.Texture 
+                break 
+            elseif (obj:IsA("ImageLabel") or obj:IsA("ImageButton")) and obj.Image ~= "" then 
+                iconId = obj.Image 
+                break 
+            elseif obj:IsA("MeshPart") and obj.TextureID ~= "" then 
+                iconId = obj.TextureID 
+                break 
+            end
+        end
+    end
+    
+    -- 3. แปลงค่าที่ได้ ให้อยู่ในฟอร์แมต rbxassetid:// เพื่อใช้ใน UI ImageLabel.Image
+    if type(iconId) == "number" or (type(iconId) == "string" and iconId:match("^%d+$")) then
+        return "rbxassetid://" .. tostring(iconId)
+    end
+    if type(iconId) == "string" then
+        -- ถ้ามันมี http หรือ rbxassetid ปนมาด้วย ให้สกัดเอาแต่ตัวเลข แล้วประกอบใหม่
+        local id = iconId:match("rbxassetid://(%d+)") or iconId:match("[?&]id=(%d+)")
+        if id then 
+            return "rbxassetid://" .. id 
+        end
+        return iconId -- ถ้าสกัดไม่ได้ ให้คืนค่าเดิมกลับไป
+    end
+    
+    return "" -- ถ้าหาไม่ได้จริงๆ ให้ส่งค่าว่างกลับ
+end
+
+
+==================================================
+4. ระบบตั้งค่าการชน (Collision & Physics Bypass) สำหรับการ Tween / บิน
+==================================================
+เวลาบินหรือเดินทะลุกำแพง ระบบมักจะโดนดึงกลับด้วยแรงดึงดูดหรือชนนู่นชนนี่ 
+Chilli Hub ใช้การจัดการ AssemblyLinearVelocity
+
+-- โค้ดทำความสะอาดแรงเหวี่ยงและระงับแรงชนตอนกำลัง Tween (Glide)
+local function GlideSteer(rootPart, targetPos, speed)
+    if not rootPart then return end
+    
+    -- ลบแรงโน้มถ่วงและแรงหมุน (ห้ามตก)
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+    
+    -- คำนวณระยะทาง
+    local dist = (targetPos - rootPart.Position).Magnitude
+    local timeToReach = dist / speed
+    
+    -- ปิดการชนของชิ้นส่วนตัวละคร
+    for _, part in ipairs(rootPart.Parent:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            part.CanCollide = false
+        end
+    end
+    
+    -- สร้าง Tween
+    local tweenInfo = TweenInfo.new(timeToReach, Enum.EasingStyle.Linear)
+    local tween = game:GetService("TweenService"):Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
+    tween:Play()
+    
+    return tween
+end
