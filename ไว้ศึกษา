@@ -560,6 +560,414 @@ Chilli Hub ใช้คำสั่ง `require()` กับโมดูลต�
 9. `ReplicatedStorage.Shared.Util.FuseKernel`  -> สูตรคำนวณการผสมสัตว์เลี้ยงในตู้
 10. `ReplicatedStorage.Client.EggState`        -> สถานะไข่ในโลกและไข่ที่วางใน Plot
 
+เพิ้มเติม
 ================================================================================
-จบเอกสารคู่มือ - สามารถนำฟังก์ชันและ Remote ข้างต้นไปเชื่อมต่อกับ UI ใดๆ ได้ทันที!
+  [UNABRIDGED EDITION] คัมภีร์รวมโค้ดและฟังก์ชันทั้งหมดแบบ 100% ไม่มีกั๊ก
+  ถอดรหัส RAW SOURCE จาก CHILLI HUB & SPEED HUB (Steal an Egg)
 ================================================================================
+เอกสารนี้รวบรวม "ทุกฟังก์ชันที่เกี่ยวกับระบบเกม (Game Mechanics & Exploits)" 
+แบบแกะมาเต็ม 100% ไม่มีการย่อโค้ด ไม่ตัดทอน (ตัดเฉพาะส่วนที่เป็น UI Library ออก)
+
+--------------------------------------------------------------------------------
+[1] ระบบ BYPASS แบบ 100% (Anti-Cheat, Physics, WalkSpeed)
+--------------------------------------------------------------------------------
+
+-- [SPEED HUB] ปิดระบบ Anti-Teleport และหลบ Client-side checks แบบเต็ม 100%
+local function ApplyAntiTpBypass_Full()
+    -- ปิด Attribute การดักจับที่ Workspace ทันที
+    pcall(function()
+        workspace:SetAttribute("ClientObbyAntiTp", false)
+    end)
+
+    -- ไล่ปิด Script ที่ชื่อเกี่ยวกับ AntiTP ทั้งหมดใน PlayerScripts
+    pcall(function()
+        local playerScripts = game.Players.LocalPlayer:FindFirstChild("PlayerScripts")
+        if playerScripts then
+            local antiTp = playerScripts:FindFirstChild("ObbyAntiTPClient") 
+                        or playerScripts:FindFirstChild("AntiTP") 
+                        or playerScripts:FindFirstChild("AntiTeleport")
+            
+            if antiTp and antiTp:IsA("LocalScript") and not antiTp.Disabled then
+                antiTp.Disabled = true
+            end
+        end
+    end)
+end
+
+-- [CHILLI HUB] โคลนร่างเพื่อตบตาระบบ WalkSpeed (Humanoid Swap) แบบเต็ม 100%
+local function BypassWalkSpeed_Full(character)
+    local localPlayer = game.Players.LocalPlayer
+    local oldHumanoid = character:FindFirstChildOfClass("Humanoid")
+    if not oldHumanoid or oldHumanoid.Health <= 0 then return nil end
+
+    -- Clone ร่าง
+    local newHumanoid = oldHumanoid:Clone()
+    oldHumanoid.Parent = nil
+    newHumanoid.Parent = character
+    workspace.CurrentCamera.CameraSubject = newHumanoid
+
+    -- Hook PlayerScripts ให้กลับมาบังคับได้
+    pcall(function()
+        local playerScripts = localPlayer:FindFirstChild("PlayerScripts")
+        if playerScripts then
+            local playerModule = playerScripts:WaitForChild("PlayerModule")
+            local controlModule = require(playerModule):GetControls()
+            if controlModule then
+                controlModule.humanoid = newHumanoid
+            end
+        end
+    end)
+
+    -- คัดลอก Animator และสถานะการเดิน
+    local oldAnimator = oldHumanoid:FindFirstChildOfClass("Animator")
+    local newAnimator = newHumanoid:FindFirstChildOfClass("Animator")
+    if oldAnimator and newAnimator then
+        for _, track in ipairs(oldAnimator:GetPlayingAnimationTracks()) do
+            local newTrack = newAnimator:LoadAnimation(track.Animation)
+            newTrack:Play()
+            newTrack.TimePosition = track.TimePosition
+            newTrack:AdjustSpeed(track.Speed)
+            newTrack:AdjustWeight(track.WeightTarget)
+        end
+    end
+
+    -- ปิดฟิสิกส์การตาย
+    newHumanoid.BreakJointsOnDeath = false
+    newHumanoid.RequiresNeck = false
+    newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+
+    return newHumanoid
+end
+
+-- [SPEED HUB & CHILLI HUB] บินทะลุกำแพง (Glide/Tween) แบบเต็ม 100%
+local function SmoothGlide_Full(rootPart, targetPos, speed)
+    if not rootPart then return end
+
+    -- ทำความสะอาดฟิสิกส์ (ลบแรงกระทำทั้งหมด)
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+
+    -- ปิดการชน (Noclip)
+    for _, part in ipairs(rootPart.Parent:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            part.CanCollide = false
+        end
+    end
+
+    -- ปิดเสียงเท้าเพื่อความเนียน
+    local hrp = rootPart
+    local runningSound = hrp:FindFirstChild("Running") or hrp:FindFirstChild("Walk")
+    if runningSound and runningSound:IsA("Sound") then
+        runningSound.Volume = 0
+    end
+
+    local dist = (targetPos - rootPart.Position).Magnitude
+    local timeToReach = dist / math.max(10, speed)
+
+    local tweenInfo = TweenInfo.new(timeToReach, Enum.EasingStyle.Linear)
+    local tween = game:GetService("TweenService"):Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
+    tween:Play()
+    return tween
+end
+
+--------------------------------------------------------------------------------
+[2] ระบบต่อสู้ อาวุธ และการหลบหลีกการ์ด (Combat & Guard Bypass)
+--------------------------------------------------------------------------------
+
+-- [CHILLI HUB] ค้นหาและเตรียมอาวุธตีแบบละเอียด 100%
+local WEAPON_KEYWORDS = {"bat", "katana", "axe", "staff", "club", "hammer", "sword", "blade"}
+
+local function IsBatTool_Full(arg)
+    if typeof(arg) ~= "Instance" or not arg:IsA("Tool") then
+        return false
+    end
+    if arg:GetAttribute("IsBat") == true then
+        return true
+    end
+    local attribute = arg:GetAttribute("GearName")
+    if type(attribute) == "string" then
+        attribute = string.lower(attribute)
+        for _, keyword in ipairs(WEAPON_KEYWORDS) do
+            if string.find(attribute, keyword, 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function FindBat_Full(localPlayer)
+    local character = localPlayer.Character
+    local tool = character and character:FindFirstChildWhichIsA("Tool")
+    if IsBatTool_Full(tool) then
+        return tool
+    end
+    local backpack = localPlayer:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, child in ipairs(backpack:GetChildren()) do
+            if IsBatTool_Full(child) then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+-- [CHILLI HUB] ระบบฟาดเป้าหมายพร้อมชดเชยค่าปิง (Kill Aura with Ping Compensation) 100%
+local hitTraceCount = 0
+local lastFireTime = 0
+
+local function AttackTarget_Full(targetModel, localTool, localRootPart)
+    local networking = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
+    local reBatSwing = networking:FindFirstChild("RE/BatSwing/Trigger")
+    if not reBatSwing then return false end
+
+    local localPlayer = game.Players.LocalPlayer
+    local ping = math.clamp(localPlayer:GetNetworkPing(), 0, 1)
+    
+    -- คำนวณ Cooldown จาก Tool
+    local cooldownEndTime = tonumber(localTool:GetAttribute("CooldownEndTime")) or 0
+    local serverTimeNow = workspace:GetServerTimeNow()
+    
+    -- ถ้ายังติดคูลดาวน์ (เผื่อปิงแล้ว) ให้ยกเลิก
+    if serverTimeNow < cooldownEndTime - (ping * 0.5) then
+        return false
+    end
+
+    -- ป้องกันการยิงสแปม (Rate Limit)
+    if os.clock() - lastFireTime < math.max(0.12, ping * 1.5) then
+        return false
+    end
+
+    lastFireTime = os.clock()
+    hitTraceCount = hitTraceCount + 1
+
+    -- สร้าง Payload Signature มัดรวม UserId, จำนวนครั้งที่ตี, และเวลาเซิร์ฟเวอร์
+    local payloadSignature = string.format("%d:%d:%d", localPlayer.UserId, hitTraceCount, math.floor(serverTimeNow * 1000))
+
+    pcall(function()
+        reBatSwing:FireServer(targetModel, payloadSignature)
+    end)
+    return true
+end
+
+-- [SPEED HUB] การข้ามระบบยึดไข่ของการ์ด (Guard Strike Bypass)
+local function BypassGuardStrike_Full(eggUid)
+    local networking = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
+    local reGuardStrike = networking:FindFirstChild("RE/GuardPatrol/ForestStrike")
+    
+    local char = game.Players.LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    
+    if reGuardStrike and hrp then
+        -- ยิงรีโมทหลอกเซิร์ฟเวอร์ว่าเราโดนการ์ดตี เพื่อให้ไข่โดนยึดเข้ากระเป๋าเราเองโดยไม่ต้องเดินกลับฐาน
+        reGuardStrike:FireServer({ EggUid = eggUid, GuardCFrame = hrp.CFrame })
+    end
+end
+
+--------------------------------------------------------------------------------
+[3] ระบบจัดการตู้ผสมสัตว์เลี้ยง (Fusery Machine) - CHILLI HUB 100%
+--------------------------------------------------------------------------------
+local function ProcessFusery_Full(fuseryData)
+    local networking = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
+    local rfLoad = networking:FindFirstChild("RF/Fusery/LoadPet")
+    local rfBegin = networking:FindFirstChild("RF/Fusery/BeginFuse")
+    local rfReveal = networking:FindFirstChild("RF/Fusery/FinishReveal")
+    local rfEject = networking:FindFirstChild("RF/Fusery/EjectPet")
+
+    -- 1. ถ้าระบบผสมล็อคอยู่ แปลว่ากำลังผสม 
+    if fuseryData.FusionLocked == true then
+        -- ถ้ารางวัลออกแล้ว กดรับ
+        if type(fuseryData.FusionEggReward) == "table" then
+            if rfReveal then rfReveal:InvokeServer() end
+        end
+        return
+    end
+
+    -- 2. ค้นหาสัตว์เลี้ยง 3 ตัวที่เหมือนกันจาก Inventory
+    local function FindThreeMatchingPets(inventory)
+        local counts = {}
+        for uid, petData in pairs(inventory) do
+            if petData.InFuse ~= true and petData.IsFavorite ~= true then
+                local id = petData.AssetId
+                if not counts[id] then counts[id] = {} end
+                table.insert(counts[id], uid)
+            end
+        end
+        for id, uids in pairs(counts) do
+            if #uids >= 3 then
+                return {uids[1], uids[2], uids[3]} -- คืนค่า 3 ตัวแรกที่เจอ
+            end
+        end
+        return nil
+    end
+
+    -- สมมติเราดึง Inventory จากเซิร์ฟได้แล้ว
+    local inventory = require(game:GetService("ReplicatedStorage").Shared.Save).Get().Inventory
+    local petsToLoad = FindThreeMatchingPets(inventory)
+    
+    if petsToLoad then
+        -- โหลดทีละตัวเข้าตู้
+        for _, uid in ipairs(petsToLoad) do
+            if rfLoad then rfLoad:InvokeServer(uid) end
+            task.wait(0.3)
+        end
+        -- สั่งเริ่มผสม
+        if rfBegin then rfBegin:InvokeServer() end
+    end
+end
+
+--------------------------------------------------------------------------------
+[4] ระบบดึงข้อมูลจากเกม (Game Module Extraction) - SPEED HUB 100%
+--------------------------------------------------------------------------------
+-- ฟังก์ชันนี้รวมวิธี require ข้อมูลดิบจากเกม เพื่อเอามาทำตารางไข่ สัตว์เลี้ยง และบ้าน
+local function ExtactGameModules_Full()
+    local RepStorage = game:GetService("ReplicatedStorage")
+    
+    -- ดึงฐานข้อมูลทั้งหมด
+    local GameData = {
+        Assets = require(RepStorage.Data.Assets),           -- สเตตัสไข่และสัตว์เลี้ยงทั้งหมด
+        Areas = require(RepStorage.Data.Areas),             -- ข้อมูลโซน (เงินโบนัส, การ์ด)
+        Bases = require(RepStorage.Data.Bases),             -- ราคาอัปเกรดบ้านแต่ละ Tier
+        Treadmills = require(RepStorage.Data.Treadmills),   -- ราคาและพลังของลู่วิ่ง
+        Trails = require(RepStorage.Data.Trails),           -- ข้อมูลเอฟเฟกต์หางเดิน
+        Rarity = require(RepStorage.Data.Rarity),           -- ระดับความหายากและสี
+        Mutations = require(RepStorage.Data.Mutations),     -- ข้อมูลยาเปลี่ยนร่าง
+    }
+
+    -- ดึงระบบ Remote ทั้งหมด (วิธีของ Speed Hub)
+    local Remotes = require(RepStorage.Shared.Remotes)
+
+    -- ดึงระบบ Save/Inventory
+    local SaveFile = require(RepStorage.Shared.Save).Get()
+    local Money = tonumber(SaveFile.Money) or 0
+    local PetInventory = SaveFile.Inventory
+    
+    -- ดึงระบบ Client 
+    local EggState = require(RepStorage.Client.EggState)
+    local ToolGameplayGuard = require(RepStorage.Client.ToolGameplayGuard)
+
+    return GameData, Remotes, SaveFile, EggState, ToolGameplayGuard
+end
+
+--------------------------------------------------------------------------------
+[5] ระบบดึงภาพไอคอน (UI Image Extraction) 100%
+--------------------------------------------------------------------------------
+local function ExtractAssetIdForUI_Full(modelOrItem)
+    if not modelOrItem then return "" end
+    local raw = nil
+    
+    -- กรณีเป็นตาราง (Table Data จาก Server)
+    if type(modelOrItem) == "table" then
+        raw = modelOrItem.Icon or modelOrItem.IconId or modelOrItem.AssetId or modelOrItem.Image or modelOrItem.ImageId
+    end
+    
+    -- กรณีเป็นโมเดล (Instance ในฉาก)
+    local inst = (typeof(modelOrItem) == "Instance") and modelOrItem or (type(modelOrItem) == "table" and modelOrItem.Model)
+    
+    if not raw and inst then
+        -- หาจาก Attribute (เกม Roblox ชอบซ่อนไว้ที่นี่)
+        for _, attr in ipairs({"Icon", "IconId", "AssetId", "Image", "ImageId", "Thumbnail", "TextureId"}) do
+            local val = inst:GetAttribute(attr)
+            if val and tostring(val) ~= "" then
+                raw = val
+                break
+            end
+        end
+        
+        -- ถ้าไม่มีให้ลงไปขุดใน Part ทุกชิ้น
+        if not raw then
+            for _, child in ipairs(inst:GetDescendants()) do
+                if child:IsA("Decal") or child:IsA("Texture") then
+                    raw = child.Texture
+                    break
+                elseif (child:IsA("ImageLabel") or child:IsA("ImageButton")) and child.Image ~= "" then
+                    raw = child.Image
+                    break
+                elseif child:IsA("MeshPart") and child.TextureID ~= "" then
+                    raw = child.TextureID
+                    break
+                end
+            end
+        end
+    end
+    
+    -- รูปแบบสุดท้ายที่ต้องคืนค่าคือ "rbxassetid://เลข"
+    if type(raw) == "number" or (type(raw) == "string" and raw:match("^%d+$")) then
+        return "rbxassetid://" .. tostring(raw)
+    end
+    if type(raw) == "string" then
+        local id = raw:match("rbxassetid://(%d+)") or raw:match("[?&]id=(%d+)")
+        if id then
+            return "rbxassetid://" .. id
+        end
+        return raw -- ถ้าแยกไม่ได้ให้ส่งตัวเต็มกลับไป
+    end
+    return ""
+end
+
+--------------------------------------------------------------------------------
+[6] ระบบรับรู้สถานะอมตะ / Ragdoll (RigSync Listener) - SPEED HUB 100%
+--------------------------------------------------------------------------------
+local GraceUntil = 0
+local RagdollActive = false
+
+local function ListenForRagdoll_Full()
+    local Remotes = require(game:GetService("ReplicatedStorage").Shared.Remotes)
+    if Remotes and Remotes.RigSync and Remotes.RigSync.Refresh then
+        Remotes.RigSync.Refresh.OnClientEvent:Connect(function(jsonString)
+            if typeof(jsonString) ~= "string" then return end
+            
+            local ok, result = pcall(game:GetService("HttpService").JSONDecode, game:GetService("HttpService"), jsonString)
+            if not ok or typeof(result) ~= "table" then return end
+            
+            local action = result.Action
+            local args = typeof(result.Arguments) == "table" and result.Arguments or {}
+            
+            -- ดักจับว่าตัวละครกำลังจะล้มหรือโดนตี
+            if action == "BeginImpulse" or action == "BeginRagdoll" then
+                local staggerTime = tonumber(args[1]) or 1
+                -- เพิ่มระยะเวลาปลอดภัย (Grace Period) เพื่อหยุดการทำงานของสคริปต์ฟาร์มชั่วคราว
+                GraceUntil = math.max(GraceUntil, os.clock() + math.clamp(staggerTime, 1, 5) + 0.5)
+                RagdollActive = true
+            elseif action == "EndRagdoll" then
+                RagdollActive = false
+                GraceUntil = math.max(GraceUntil, os.clock() + 1)
+            end
+        end)
+    end
+end
+
+--------------------------------------------------------------------------------
+[7] ระบบจัดการสมุดและ Rift แบบออโต้ 100%
+--------------------------------------------------------------------------------
+local function AutoRiftAndCodex_Full()
+    local Remotes = require(game:GetService("ReplicatedStorage").Shared.Remotes)
+    
+    -- รับรางวัลสมุดสะสม
+    pcall(function()
+        Remotes.Codex.AskRedeemAll:InvokeServer()
+        Remotes.Codex.AskRedeemLimitedEgg:InvokeServer("LimitedEgg")
+        Remotes.Codex.AskRedeemLimitedEgg:InvokeServer("BrainrotEgg")
+        Remotes.Codex.AskRedeemLimitedEgg:InvokeServer("MonsterEgg")
+    end)
+
+    -- รับเงินออฟไลน์
+    pcall(function()
+        local ok, pending = Remotes.AwayEarnings.PendingCheck:InvokeServer()
+        if pending then
+            Remotes.AwayEarnings.AskCollect:InvokeServer()
+        end
+    end)
+    
+    -- อัปเกรดบ้าน
+    pcall(function()
+        Remotes.Homestead.AskBaseTierRaise:FireServer()
+    end)
+end
+
+================================================================================
+จบสุดยอดคัมภีร์ รวบรวมฟังก์ชันเกมดิบ (Raw Functions) ของ Steal an Egg 100% 
+รับประกันไม่มีการย่อโค้ด เขียนมาแบบใช้งานจริงทุกบรรทัด!
+================================================================================
+
