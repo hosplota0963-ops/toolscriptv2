@@ -1,86 +1,376 @@
---- รวมโค้ดและเครื่องมือที่แกะมาจาก Chilli Hub (ที่ Lucy ไม่มี) ---
--- จัดทำเพื่อให้สามารถนำไปประยุกต์ใส่สคริปต์ตัวเองได้ง่ายๆ พร้อมคำอธิบายแบบละเอียดยิบ
+================================================================================
+  คลังรวม Remote และฟังก์ชันทั้งหมดที่แกะจาก CHILLI HUB (สำหรับศึกษาและทำ UI)
+  เกม: Steal an Egg (Roblox)
+================================================================================
 
-==================================================
-1. ระบบสแกนหาอาวุธ (ไม้ตี) และรีโมทที่ใช้ตี (Weapon Scan & Combat Remote)
-==================================================
-ใน Chilli Hub จะไม่ได้แค่ดูชื่อ Tool ตรงๆ แต่จะเช็คลงลึกไปถึง Attribute ของ Tool ด้วย
-คำที่สคริปต์ใช้ค้นหาอาวุธ: "bat", "katana", "axe", "staff", "club", "hammer", "sword", "blade"
+สารบัญ:
+  หมวดที่ 1: ระบบเชื่อมต่อ Network และ Wrapper พื้นฐาน (Networking Helper)
+  หมวดที่ 2: รวม Remote ทั้งหมดในเกม แยกตามระบบ (ชื่อ, ประเภท, Arguments, วิธีใช้)
+      2.1 ระบบฟาร์มไข่และหลบการ์ด (Egg World & Guard Bypass)
+      2.2 ระบบลู่วิ่งฝึกฝน (Treadmill & Speed Training)
+      2.3 ระบบจัดการสัตว์เลี้ยงและกระเป๋า (Pet Satchel & Inventory)
+      2.4 ระบบตู้ผสมสัตว์เลี้ยง (Pet Fusion / Fusery Machine)
+      2.5 ระบบรอยแยกมิติและบอส (Rift & Boss Mastery)
+      2.6 ระบบอีเวนต์ Dr. Scramble (Drones, Drops, Vault & Shop)
+      2.7 ระบบอัปเกรดฐานและไอเทมติดตัว (Base Homestead & Trailwear)
+      2.8 ระบบรับรางวัล AFK และสมุดสะสม (Away Earnings & Codex Rewards)
+      2.9 ระบบการต่อสู้และอาวุธ (Combat & Bat Swing)
+  หมวดที่ 3: รวมฟังก์ชันระบบและเทคนิค Bypass ต่างๆ
+      3.1 ระบบ WalkSpeed / JumpPower Bypass (Humanoid Swap)
+      3.2 ระบบค้นหาอาวุธและคำนวณการตี (Weapon Scanner & Kill Aura)
+      3.3 ระบบดึงภาพไอคอนจากโมเดลเข้า UI (Icon/Texture to rbxassetid://)
+      3.4 ระบบบิน/Glide Physics Bypass (ลบล้างแรงเหวี่ยงและปิดการชน)
+      3.5 โมดูลข้อมูลสำคัญภายในเกม (ReplicatedStorage Data Modules)
 
--- โค้ดดึงรีโมทตี
-local networking = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
-local batSwingRemote = networking:FindFirstChild("RE/BatSwing/Trigger")
-local toolTriggerRemote = networking:FindFirstChild("RE/ToolTrigger/Trigger")
+--------------------------------------------------------------------------------
+หมวดที่ 1: ระบบเชื่อมต่อ Network และ Wrapper พื้นฐาน (Networking Helper)
+--------------------------------------------------------------------------------
+ในเกม Steal an Egg ตัว Remote ทั้งหมดจะถูกเก็บไว้ที่:
+Path: game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
 
--- ฟังก์ชันเช็คว่าเป็นอาวุธหรือไม่
-local function IsBatTool(tool)
-    if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
+โค้ด Wrapper สำเร็จรูปสำหรับเรียก Remote Function (Invoke) และ Remote Event (Fire):
+
+```lua
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Networking = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Networking")
+
+local Net = {
+    _cache = {}
+}
+
+function Net.Get(name)
+    if Net._cache[name] ~= nil then
+        return Net._cache[name] or nil
+    end
+    local remote = Networking:FindFirstChild(name)
+    Net._cache[name] = remote or false
+    return remote
+end
+
+-- สำหรับ RemoteFunction
+function Net.Invoke(name, ...)
+    local rf = Net.Get(name)
+    if not rf or not rf:IsA("RemoteFunction") then
+        warn("[Net] ไม่พบ RemoteFunction: " .. tostring(name))
+        return false, nil
+    end
+    local ok, res = pcall(rf.InvokeServer, rf, ...)
+    return ok, res
+end
+
+-- สำหรับ RemoteEvent
+function Net.Fire(name, ...)
+    local re = Net.Get(name)
+    if not re or not re:IsA("RemoteEvent") then
+        warn("[Net] ไม่พบ RemoteEvent: " .. tostring(name))
         return false
     end
-    -- วิธีที่ 1: เช็คจาก Attribute โดยตรง (เกมมักจะแปะไว้ให้)
-    if tool:GetAttribute("IsBat") == true then
-        return true
-    end
-    -- วิธีที่ 2: เช็คจากชื่อ GearName
-    local gearName = tool:GetAttribute("GearName")
-    if type(gearName) == "string" then
-        gearName = string.lower(gearName)
-        local weaponKeywords = {"bat", "katana", "axe", "staff", "club", "hammer", "sword", "blade"}
-        for _, keyword in ipairs(weaponKeywords) do
-            if string.find(gearName, keyword, 1, true) then
-                return true
-            end
-        end
-    end
-    return false
+    return pcall(re.FireServer, re, ...)
 end
+```
 
--- ฟังก์ชันค้นหาอาวุธในตัวและกระเป๋า
-local function FindBat(player)
-    -- หาในตัวละครที่ถืออยู่ก่อน
-    local charTool = player.Character and player.Character:FindFirstChildWhichIsA("Tool")
-    if charTool and IsBatTool(charTool) then return charTool end
+--------------------------------------------------------------------------------
+หมวดที่ 2: รวม Remote ทั้งหมดในเกม แยกตามระบบ
+--------------------------------------------------------------------------------
+
+==================================================
+2.1 ระบบฟาร์มไข่และหลบการ์ด (Egg World & Guard Bypass)
+==================================================
+
+1. [RemoteFunction] "RF/EggWorld/AskFieldEggSnapshot"
+   - คำอธิบาย: ดึงข้อมูลไข่ทั้งหมดที่กำลังเกิดอยู่ในทุกโซนแบบ Real-Time (UID, Rarity, State, Position, Owner ฯลฯ)
+   - วิธีเรียก:
+     local ok, data = Net.Invoke("RF/EggWorld/AskFieldEggSnapshot")
+     -- data.Records จะเป็นตารางรวมข้อมูลไข่ทั้งหมด
+
+2. [RemoteFunction] "RF/EggWorld/AskPlaceEgg"
+   - คำอธิบาย: วางไข่ลงแท่นวางในพื้นที่ Plot ของเรา
+   - Arguments: Table { Uid = string, LocalCFrame = CFrame }
+   - วิธีเรียก:
+     Net.Invoke("RF/EggWorld/AskPlaceEgg", {
+         Uid = eggUid,
+         LocalCFrame = standCFrame
+     })
+
+3. [RemoteFunction] "RF/EggWorld/AskHatch"
+   - คำอธิบาย: เริ่มฟักไข่ (เปิดไข่)
+   - Arguments: eggUid (string)
+   - วิธีเรียก:
+     local ok, res = Net.Invoke("RF/EggWorld/AskHatch", eggUid)
+
+4. [RemoteFunction] "RF/EggWorld/AskFinishHatch"
+   - คำอธิบาย: ยืนยันการฟักไข่เสร็จสิ้น (รับสัตว์เลี้ยงเข้าตัว)
+   - Arguments: eggUid (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/EggWorld/AskFinishHatch", eggUid)
+
+5. [RemoteFunction] "RF/EggWorld/AskWearTool"
+   - คำอธิบาย: สวมใส่ไข่หรือถือเครื่องมือที่เกี่ยวข้อง
+   - Arguments: toolUid หรือ toolName (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/EggWorld/AskWearTool", toolUid)
+
+6. [RemoteEvent] "RE/GuardPatrol/ForestStrike" (เทคนิคโกงอุ้มไข่ข้ามการ์ด)
+   - คำอธิบาย: หลอกระบบว่าการ์ดในป่าหรือโซนต่างๆ ฟาดโดนตัวเราแล้ว ซึ่งเกมจะบังคับให้ไข่เด้งเข้ากระเป๋าหลังทันทีโดยตัวเราไม่ตายและไม่ติดคุก!
+   - Arguments: Table { EggUid = string, GuardCFrame = CFrame }
+   - วิธีเรียก:
+     local char = game.Players.LocalPlayer.Character
+     local hrp = char and char:FindFirstChild("HumanoidRootPart")
+     if hrp then
+         Net.Fire("RE/GuardPatrol/ForestStrike", {
+             EggUid = targetEggUid,
+             GuardCFrame = hrp.CFrame
+         })
+     end
+
+==================================================
+2.2 ระบบลู่วิ่งฝึกฝน (Treadmill & Speed Training)
+==================================================
+
+1. [RemoteFunction] "RF/Treadmill/AskWearStill"
+   - คำอธิบาย: ขึ้นไปยืนวิ่งบนลู่วิ่ง (หรือรักษาสถานะกำลังวิ่งเพื่อปั๊ม Speed ตลอดเวลา)
+   - วิธีเรียก:
+     local ok, isRunning = Net.Invoke("RF/Treadmill/AskWearStill")
+
+2. [RemoteFunction] "RF/Treadmill/AskDoff"
+   - คำอธิบาย: ลงจากลู่วิ่ง
+   - วิธีเรียก:
+     Net.Invoke("RF/Treadmill/AskDoff")
+
+3. [RemoteFunction] "RF/Treadmill/AskTierRaise"
+   - คำอธิบาย: อัปเกรดระดับของลู่วิ่งให้วิ่งได้เร็วขึ้นและได้สเตตัสมากขึ้น
+   - Arguments: treadmillId (string เช่น "Treadmill_Tier_2")
+   - วิธีเรียก:
+     Net.Invoke("RF/Treadmill/AskTierRaise", treadmillId)
+
+==================================================
+2.3 ระบบจัดการสัตว์เลี้ยงและกระเป๋า (Pet Satchel & Inventory)
+==================================================
+
+1. [RemoteEvent] "RE/PetSatchel/SellSelection"
+   - คำอธิบาย: ขายสัตว์เลี้ยงหรือไข่ที่เลือกไว้ตาม UID (ใช้ทำระบบ Auto Sell)
+   - Arguments: Table { Eggs = table_of_egg_uids, Assets = table_of_pet_uids }
+   - วิธีเรียก:
+     Net.Fire("RE/PetSatchel/SellSelection", {
+         Eggs = {"EggUid1", "EggUid2"},
+         Assets = {"PetUid1", "PetUid2"}
+     })
+
+2. [RemoteEvent] "RE/PetSatchel/WriteFavourite"
+   - คำอธิบาย: ล็อคสัตว์เลี้ยงเป็นตัวโปรด ป้องกันการขายหรือผสมทิ้ง
+   - Arguments: petUid (string), isFavorite (boolean)
+   - วิธีเรียก:
+     Net.Fire("RE/PetSatchel/WriteFavourite", petUid, true)
+
+3. [RemoteFunction] "RF/Haul/WearBest"
+   - คำอธิบาย: สวมใส่สัตว์เลี้ยงตัวที่ดีที่สุดอัตโนมัติ (Equip Best Pets)
+   - วิธีเรียก:
+     Net.Invoke("RF/Haul/WearBest")
+
+4. [RemoteFunction] "RF/Haul/FetchWearBestStatus"
+   - คำอธิบาย: ตรวจสอบสถานะว่าสัตว์เลี้ยงที่ใส่อยู่ตอนนี้เป็นตัวที่ดีที่สุดแล้วหรือยัง
+   - วิธีเรียก:
+     local ok, status = Net.Invoke("RF/Haul/FetchWearBestStatus")
+
+5. [RemoteFunction] "RF/PenRoster/AskWearLimit"
+   - คำอธิบาย: ดึงข้อมูลหรือซื้อเพิ่มช่องสวมใส่สัตว์เลี้ยงสูงสุด (Max Equip Slots)
+   - วิธีเรียก:
+     local ok, limit = Net.Invoke("RF/PenRoster/AskWearLimit")
+
+==================================================
+2.4 ระบบตู้ผสมสัตว์เลี้ยง (Pet Fusion / Fusery Machine)
+==================================================
+
+1. [RemoteFunction] "RF/Fusery/LoadPet"
+   - คำอธิบาย: นำสัตว์เลี้ยงใส่เข้าช่องตู้ผสม (ต้องใส่สัตว์เลี้ยงชนิดเดียวกัน 3 ตัว)
+   - Arguments: petUid (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/Fusery/LoadPet", petUid)
+
+2. [RemoteFunction] "RF/Fusery/BeginFuse"
+   - คำอธิบาย: สั่งเริ่มการผสมสัตว์เลี้ยง
+   - วิธีเรียก:
+     local ok, result = Net.Invoke("RF/Fusery/BeginFuse")
+
+3. [RemoteFunction] "RF/Fusery/FinishReveal"
+   - คำอธิบาย: กดรับสัตว์เลี้ยงตัวใหม่ที่ผสมเสร็จแล้ว
+   - วิธีเรียก:
+     Net.Invoke("RF/Fusery/FinishReveal")
+
+4. [RemoteFunction] "RF/Fusery/EjectPet"
+   - คำอธิบาย: ดีดสัตว์เลี้ยงออกจากตู้ผสม (ยกเลิกก่อนผสม)
+   - Arguments: petUid (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/Fusery/EjectPet", petUid)
+
+==================================================
+2.5 ระบบรอยแยกมิติและบอส (Rift & Boss Mastery)
+==================================================
+
+1. [RemoteFunction] "RF/Rift/AskState"
+   - คำอธิบาย: ดึงข้อมูลสถานะของ Rift (เงื่อนไขการบูชายัญสัตว์เลี้ยง, เวลาที่เหลือ, Pity, Banner ปัจจุบัน)
+   - วิธีเรียก:
+     local ok, riftState = Net.Invoke("RF/Rift/AskState")
+
+2. [RemoteFunction] "RF/Rift/AskTradeIn"
+   - คำอธิบาย: ส่งสัตว์เลี้ยง 3 ตัวตาม Recipe เข้าไปบูชายัญใน Rift เพื่อรับรางวัล
+   - Arguments: Table { petUid1, petUid2, petUid3 }
+   - วิธีเรียก:
+     Net.Invoke("RF/Rift/AskTradeIn", {uid1, uid2, uid3})
+
+3. [RemoteFunction] "RF/Rift/AskRefresh"
+   - คำอธิบาย: รีโรล (สุ่มใหม่) รายชื่อสัตว์เลี้ยงที่ Rift ต้องการ (ถ้ามี Free Refresh เหลือ)
+   - วิธีเรียก:
+     local ok, res = Net.Invoke("RF/Rift/AskRefresh")
+
+4. [RemoteFunction] "RF/Rift/AskFinishReveal"
+   - คำอธิบาย: กดรับของรางวัลจาก Rift หลังจากบูชายัญสำเร็จ
+   - วิธีเรียก:
+     Net.Invoke("RF/Rift/AskFinishReveal")
+
+5. [RemoteFunction] "RF/BossMastery/AskBuyShopItem"
+   - คำอธิบาย: ซื้อของในร้านค้า Boss Mastery Shop
+   - Arguments: itemId (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/BossMastery/AskBuyShopItem", itemId)
+
+6. [RemoteFunction] "RF/BossMastery/AskUseMutationConsumable"
+   - คำอธิบาย: ใช้น้ำยา Mutation ใส่สัตว์เลี้ยงเพื่อเปลี่ยนร่างกลายพันธุ์
+   - Arguments: petUid (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/BossMastery/AskUseMutationConsumable", petUid)
+
+==================================================
+2.6 ระบบอีเวนต์ Dr. Scramble (Drones, Drops, Vault & Shop)
+==================================================
+
+1. [RemoteFunction] "RF/Scramble/Request"
+   - คำอธิบาย: ฟังก์ชันหลักของอีเวนต์ ด็อกเตอร์ รองรับหลายคำสั่งย่อย
+   - คำสั่งย่อย:
+     a) Net.Invoke("RF/Scramble/Request", "Snapshot") -> ดึงสถานะอีเวนต์ทั้งหมด
+     b) Net.Invoke("RF/Scramble/Request", "Discover") -> ปลดล็อคจุดค้นพบ
+     c) Net.Invoke("RF/Scramble/Request", "Vault")    -> เปิดห้องนิรภัยรับรางวัลใหญ่
+     d) Net.Invoke("RF/Scramble/Request", "Shop", itemId, { Quote = quote, Sequence = seq }) -> ซื้อของอีเวนต์
+
+2. RemoteEvents ฝั่งตรวจจับเหตุการณ์อีเวนต์ (Client Listeners):
+   - "RE/Scramble/Drones"      -> สตรีมข้อมูลโดรนที่บินในแมพ
+   - "RE/Scramble/Drops"       -> สตรีมของดรอปที่ตกจากโดรน
+   - "RE/Scramble/RemoveDrops" -> สตรีมของที่หายไปแล้ว
+   - "RE/Scramble/State"       -> สตรีมสถานะอีเวนต์ (เริ่ม/จบ/ช่วง Outbreak)
+   - "RE/Scramble/Effect"      -> เอฟเฟกต์ภาพและเสียงของอีเวนต์
+   - ตัวอย่างการดักฟัง:
+     Net.Get("RE/Scramble/Drops").OnClientEvent:Connect(function(dropData)
+         print("มีของตกในแมพ:", dropData)
+     end)
+
+==================================================
+2.7 ระบบอัปเกรดฐานและไอเทมติดตัว (Base Homestead & Trailwear)
+==================================================
+
+1. [RemoteEvent] "RE/Homestead/AskBaseTierRaise"
+   - คำอธิบาย: สั่งอัปเกรดระดับ Base (ฐานบ้าน) ของเราเมื่อมีเงินพอ
+   - วิธีเรียก:
+     Net.Fire("RE/Homestead/AskBaseTierRaise")
+
+2. [RemoteFunction] "RF/Trailwear/AskPurchase"
+   - คำอธิบาย: สั่งซื้อ Trail (เอฟเฟกต์หางเดิน) ตาม ID
+   - Arguments: trailId (string)
+   - วิธีเรียก:
+     Net.Invoke("RF/Trailwear/AskPurchase", trailId)
+
+==================================================
+2.8 ระบบรับรางวัล AFK และสมุดสะสม (Away Earnings & Codex Rewards)
+==================================================
+
+1. [RemoteFunction] "RF/AwayEarnings/PendingCheck"
+   - คำอธิบาย: ตรวจสอบว่ามีเงินสะสมขณะออฟไลน์/AFK รอให้กดรับอยู่หรือไม่
+   - วิธีเรียก:
+     local ok, hasMoney = Net.Invoke("RF/AwayEarnings/PendingCheck")
+
+2. [RemoteFunction] "RF/AwayEarnings/AskCollect"
+   - คำอธิบาย: กดเคลมรับเงินรางวัลออฟไลน์เข้าตัว
+   - วิธีเรียก:
+     Net.Invoke("RF/AwayEarnings/AskCollect")
+
+3. [RemoteFunction] "RF/Codex/AskRedeemAll"
+   - คำอธิบาย: กดรับของรางวัลทั้งหมดจากสมุดสะสม (Codex/Index) ที่ปลดล็อคแล้ว
+   - วิธีเรียก:
+     Net.Invoke("RF/Codex/AskRedeemAll")
+
+4. [RemoteFunction] "RF/Codex/AskRedeemLimitedEgg"
+   - คำอธิบาย: แลกไข่ Limited จากสมุดสะสม
+   - Arguments: eggId (string) เช่น "LimitedEgg", "BrainrotEgg", "MonsterEgg"
+   - วิธีเรียก:
+     Net.Invoke("RF/Codex/AskRedeemLimitedEgg", "LimitedEgg")
+
+==================================================
+2.9 ระบบการต่อสู้และอาวุธ (Combat & Bat Swing)
+==================================================
+
+1. [RemoteEvent] "RE/BatSwing/Trigger"
+   - คำอธิบาย: สั่งเหวี่ยงไม้ฟาดศัตรู/ผู้เล่นคนอื่น (Kill Aura / Auto Strike)
+   - สูตร Payload สำคัญที่ Chilli Hub แกะมา:
+     พารามิเตอร์ 1: targetModel (Instance โมเดลของผู้เล่นเป้าหมาย)
+     พารามิเตอร์ 2: signature string ในรูปแบบ "UserId:TraceCount:ServerTimestampMs"
+   - โค้ดตัวอย่างการเรียกตีเป๊ะๆ:
+     ```lua
+     local traceCount = 0
+     function AttackTarget(targetCharacter)
+         local batRemote = Net.Get("RE/BatSwing/Trigger")
+         if not batRemote then return end
+         
+         traceCount = traceCount + 1
+         local localPlayer = game.Players.LocalPlayer
+         local serverTimeMs = math.floor(workspace:GetServerTimeNow() * 1000)
+         local payloadSignature = string.format("%d:%d:%d", localPlayer.UserId, traceCount, serverTimeMs)
+         
+         batRemote:FireServer(targetCharacter, payloadSignature)
+     end
+     ```
+
+2. [RemoteEvent] "RE/ToolTrigger/Trigger"
+   - คำอธิบาย: สั่งกดใช้งาน Tool พิเศษอื่นๆ นอกเหนือจากไม้ตี
+   - วิธีเรียก:
+     Net.Fire("RE/ToolTrigger/Trigger")
+
+3. [RemoteEvent] "RE/RigSync/AskRigWipe"
+   - คำอธิบาย: รีเซ็ตร่างกายและกระเป๋า Tool เมื่อเกิดข้อผิดพลาดในการถือ
+
+
+--------------------------------------------------------------------------------
+หมวดที่ 3: รวมฟังก์ชันระบบและเทคนิค Bypass ต่างๆ
+--------------------------------------------------------------------------------
+
+==================================================
+3.1 ระบบ WalkSpeed / JumpPower Bypass (Humanoid Swap)
+==================================================
+หลักการ: ตัวเกมมีสคริปต์ Anti-Cheat คอยตรวจจับ Property "WalkSpeed" ของ Humanoid ตัวเดิม
+Chilli Hub จึงทำการ "โคลนร่าง (Clone)" Humanoid ตัวใหม่ออกมา แล้วตัด Humanoid ตัวเก่าทิ้ง เพื่อให้สคริปต์ตรวจจับชี้ไปที่ตัวเก่าที่ไม่มีผลอะไรกับตัวละครจริง
+
+```lua
+local function ApplyHumanoidSwapBypass()
+    local player = game.Players.LocalPlayer
+    local character = player.Character
+    if not character then return nil end
     
-    -- ถ้าไม่ได้ถือ ให้หาในกระเป๋า (Backpack)
-    local backpack = player:FindFirstChildOfClass("Backpack")
-    if backpack then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if IsBatTool(tool) then return tool end
-        end
-    end
-    return nil
-end
-
--- วิธีใช้งานรีโมทตี (FireServer)
--- batSwingRemote:FireServer(พารามิเตอร์ของเกม เช่น CFrame, Hitbox ฯลฯ)
-
-
-==================================================
-2. ระบบวิ่งไว (WalkSpeed Bypass / Humanoid Swap)
-==================================================
-เกมมักจะมี Anti-Cheat คอยตรวจจับค่า WalkSpeed และ JumpPower ของ Humanoid 
-Chilli Hub ใช้วิธีที่เรียกว่า "Humanoid Swap" หรือการโคลนร่างและสลับ Humanoid เพื่อหลอกสคริปต์ตรวจสอบ (Monitor Disable)
-
--- โค้ดโคลนและสลับ Humanoid
-local function BypassWalkSpeed(character)
     local oldHumanoid = character:FindFirstChildOfClass("Humanoid")
-    if not oldHumanoid or oldHumanoid.Health <= 0 then return end
+    if not oldHumanoid or oldHumanoid.Health <= 0 then return nil end
     
-    -- ทำการ Clone ตัวเก่าออกมา
+    -- 1. ทำการ Clone Humanoid ออกมา
     local newHumanoid = oldHumanoid:Clone()
     
-    -- ตัดตัวเก่าออกจาก Character
-    oldHumanoid.Parent = nil 
+    -- 2. นำตัวเดิมออกจาก Character
+    oldHumanoid.Parent = nil
     
-    -- เอาตัวใหม่ยัดเข้าไปแทนที่
+    -- 3. นำตัวใหม่ยัดเข้าไปใน Character
     newHumanoid.Parent = character
     
-    -- อัปเดตมุมกล้องให้จับไปที่ Humanoid ตัวใหม่
+    -- 4. ตั้งค่ากล้องให้มอง Humanoid ตัวใหม่
     workspace.CurrentCamera.CameraSubject = newHumanoid
     
-    -- เชื่อมต่อคอนโทรลเลอร์ (PlayerScripts) ของผู้เล่นให้ใช้ Humanoid ตัวใหม่ (จำเป็นมากไม่งั้นเดินไม่ได้)
+    -- 5. สลับระบบควบคุมการเดินของผู้เล่น (PlayerModule) มาที่ตัวใหม่
     pcall(function()
-        local playerScripts = game.Players.LocalPlayer:FindFirstChild("PlayerScripts")
+        local playerScripts = player:FindFirstChild("PlayerScripts")
         if playerScripts then
             local controlModule = require(playerScripts:WaitForChild("PlayerModule")):GetControls()
             if controlModule then
@@ -89,97 +379,187 @@ local function BypassWalkSpeed(character)
         end
     end)
     
-    -- ป้องกันระบบสั่งตายเมื่อข้อต่อหลุด (Anti-Death)
+    -- 6. ปิดระบบคอหักตาย/ข้อต่อหลุดตาย (Godmode Protection)
     newHumanoid.BreakJointsOnDeath = false
     newHumanoid.RequiresNeck = false
     newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
     
+    -- 7. ปรับความเร็วตามต้องการได้เลย ไม่โดนแบนหรือดีดกลับ
+    newHumanoid.WalkSpeed = 120
+    
     return newHumanoid
 end
-
+```
 
 ==================================================
-3. การดึงภาพ/ไอคอน จากเกมมาใส่ UI (UI Image Extraction)
+3.2 ระบบค้นหาอาวุธในตัว (Weapon Scanner)
 ==================================================
-หากต้องการทำ ESP ไข่หรือไอเทม การเอา "id ภาพ" มาใส่ `ImageLabel` ใน UI ต้องใช้ฟอร์แมต `rbxassetid://` เสมอ
-Chilli Hub ใช้วิธีเจาะลึกเข้าไปใน Model ของสิ่งของเพื่อหา Texture แท้ๆ
+หลักการ: ค้นหาว่าตัวละครถือไม้หรือมีอาวุธในกระเป๋าหรือไม่ โดยเช็ค Attribute ของเกม
 
--- โค้ดดึงภาพสำหรับใช้กับ ImageLabel ใน BillboardGui (ESP)
-local function GetIconForUI(itemModel)
-    local iconId = nil
-    
-    -- 1. ลองหาจาก Attribute ยอดฮิตก่อน
-    local attrNames = {"Icon", "IconId", "AssetId", "Image", "ImageId", "Thumbnail", "TextureId"}
-    for _, attrName in ipairs(attrNames) do
-        local attrValue = itemModel:GetAttribute(attrName)
-        if attrValue and tostring(attrValue) ~= "" then
-            iconId = attrValue
-            break
+```lua
+local WEAPON_KEYWORDS = {"bat", "katana", "axe", "staff", "club", "hammer", "sword", "blade"}
+
+local function IsValidWeapon(tool)
+    if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
+        return false
+    end
+    -- เช็ค Attribute ตรงๆ
+    if tool:GetAttribute("IsBat") == true then
+        return true
+    end
+    -- เช็คชื่อ GearName
+    local gear = tool:GetAttribute("GearName")
+    if type(gear) == "string" then
+        gear = string.lower(gear)
+        for _, word in ipairs(WEAPON_KEYWORDS) do
+            if string.find(gear, word, 1, true) then
+                return true
+            end
         end
     end
+    -- เช็คชื่อ Tool
+    local name = string.lower(tool.Name)
+    for _, word in ipairs(WEAPON_KEYWORDS) do
+        if string.find(name, word, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function GetEquippedOrBackpackWeapon()
+    local player = game.Players.LocalPlayer
+    local char = player.Character
+    -- เช็คในมือ
+    local inHand = char and char:FindFirstChildWhichIsA("Tool")
+    if inHand and IsValidWeapon(inHand) then
+        return inHand
+    end
+    -- เช็คในกระเป๋า
+    local bp = player:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, item in ipairs(bp:GetChildren()) do
+            if IsValidWeapon(item) then
+                return item
+            end
+        end
+    end
+    return nil
+end
+```
+
+==================================================
+3.3 ระบบดึงภาพไอคอนจากโมเดลเข้า UI (Icon/Texture to rbxassetid://)
+==================================================
+หลักการ: เวลาสร้าง UI (ImageLabel) ในเกม Roblox จะต้องใส่รูปในฟอร์แมต `rbxassetid://<ID>` เสมอ 
+ฟังก์ชันนี้จะสแกนหา Asset ID ไม่ว่าเกมจะซ่อนไว้ใน Attribute หรือ Decal/Texture/MeshPart
+
+```lua
+local function ExtractAssetIdForUI(modelOrItem)
+    if not modelOrItem then return "" end
     
-    -- 2. ถ้าใน Attribute ไม่มี ให้มุดลงไปหาใน Part ต่างๆ ของ Model
-    if not iconId then
-        for _, obj in ipairs(itemModel:GetDescendants()) do
-            if obj:IsA("Decal") or obj:IsA("Texture") then 
-                iconId = obj.Texture 
-                break 
-            elseif (obj:IsA("ImageLabel") or obj:IsA("ImageButton")) and obj.Image ~= "" then 
-                iconId = obj.Image 
-                break 
-            elseif obj:IsA("MeshPart") and obj.TextureID ~= "" then 
-                iconId = obj.TextureID 
-                break 
+    local raw = nil
+    -- 1. เช็คจากฟิลด์หรือ Attribute โดยตรง
+    if type(modelOrItem) == "table" then
+        raw = modelOrItem.Icon or modelOrItem.IconId or modelOrItem.AssetId or modelOrItem.Image
+    end
+    
+    local inst = (typeof(modelOrItem) == "Instance") and modelOrItem or (type(modelOrItem) == "table" and modelOrItem.Model)
+    if not raw and inst then
+        for _, attr in ipairs({"Icon", "IconId", "AssetId", "Image", "Thumbnail", "TextureId"}) do
+            local val = inst:GetAttribute(attr)
+            if val and tostring(val) ~= "" then
+                raw = val
+                break
+            end
+        end
+        -- ถ้าใน Attribute ไม่มี ให้มุดค้นหาในชิ้นส่วนย่อย
+        if not raw then
+            for _, child in ipairs(inst:GetDescendants()) do
+                if child:IsA("Decal") or child:IsA("Texture") then
+                    raw = child.Texture
+                    break
+                elseif (child:IsA("ImageLabel") or child:IsA("ImageButton")) and child.Image ~= "" then
+                    raw = child.Image
+                    break
+                elseif child:IsA("MeshPart") and child.TextureID ~= "" then
+                    raw = child.TextureID
+                    break
+                end
             end
         end
     end
     
-    -- 3. แปลงค่าที่ได้ ให้อยู่ในฟอร์แมต rbxassetid:// เพื่อใช้ใน UI ImageLabel.Image
-    if type(iconId) == "number" or (type(iconId) == "string" and iconId:match("^%d+$")) then
-        return "rbxassetid://" .. tostring(iconId)
+    -- 2. แปลงเป็นสตริง rbxassetid://
+    if type(raw) == "number" or (type(raw) == "string" and raw:match("^%d+$")) then
+        return "rbxassetid://" .. tostring(raw)
     end
-    if type(iconId) == "string" then
-        -- ถ้ามันมี http หรือ rbxassetid ปนมาด้วย ให้สกัดเอาแต่ตัวเลข แล้วประกอบใหม่
-        local id = iconId:match("rbxassetid://(%d+)") or iconId:match("[?&]id=(%d+)")
-        if id then 
-            return "rbxassetid://" .. id 
+    if type(raw) == "string" then
+        local id = raw:match("rbxassetid://(%d+)") or raw:match("[?&]id=(%d+)")
+        if id then
+            return "rbxassetid://" .. id
         end
-        return iconId -- ถ้าสกัดไม่ได้ ให้คืนค่าเดิมกลับไป
+        return raw
     end
-    
-    return "" -- ถ้าหาไม่ได้จริงๆ ให้ส่งค่าว่างกลับ
+    return ""
 end
-
+```
 
 ==================================================
-4. ระบบตั้งค่าการชน (Collision & Physics Bypass) สำหรับการ Tween / บิน
+3.4 ระบบบิน/Glide Physics Bypass (ลบล้างแรงเหวี่ยงและปิดการชน)
 ==================================================
-เวลาบินหรือเดินทะลุกำแพง ระบบมักจะโดนดึงกลับด้วยแรงดึงดูดหรือชนนู่นชนนี่ 
-Chilli Hub ใช้การจัดการ AssemblyLinearVelocity
+หลักการ: รีเซ็ตแรงเหวี่ยงฟิสิกส์ (`AssemblyLinearVelocity`) ให้เป็นศูนย์ เพื่อป้องกันการตกหรือเด้งกลับ และปิด `CanCollide` ในตัวละครเพื่อให้ทะลุสิ่งกีดขวางได้ 100%
 
--- โค้ดทำความสะอาดแรงเหวี่ยงและระงับแรงชนตอนกำลัง Tween (Glide)
-local function GlideSteer(rootPart, targetPos, speed)
-    if not rootPart then return end
+```lua
+local TweenService = game:GetService("TweenService")
+
+local function SmoothGlideTo(targetPosition, speed)
+    local player = game.Players.LocalPlayer
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
     
-    -- ลบแรงโน้มถ่วงและแรงหมุน (ห้ามตก)
-    rootPart.AssemblyLinearVelocity = Vector3.zero
-    rootPart.AssemblyAngularVelocity = Vector3.zero
+    -- 1. ตัดแรงโน้มถ่วงและแรงหมุน
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
     
-    -- คำนวณระยะทาง
-    local dist = (targetPos - rootPart.Position).Magnitude
-    local timeToReach = dist / speed
-    
-    -- ปิดการชนของชิ้นส่วนตัวละคร
-    for _, part in ipairs(rootPart.Parent:GetDescendants()) do
+    -- 2. ปิดการชนของทุกชิ้นส่วนในตัวละคร
+    for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") and part.CanCollide then
             part.CanCollide = false
         end
     end
     
-    -- สร้าง Tween
-    local tweenInfo = TweenInfo.new(timeToReach, Enum.EasingStyle.Linear)
-    local tween = game:GetService("TweenService"):Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
-    tween:Play()
+    -- 3. คำนวณเวลาการเดินทางตามความเร็ว (Studs/วินาที)
+    local distance = (targetPosition - hrp.Position).Magnitude
+    local duration = distance / math.max(10, speed or 350)
     
+    -- 4. รัน Tween เคลื่อนที่แบบเส้นตรงอย่างราบรื่น
+    local tween = TweenService:Create(
+        hrp,
+        TweenInfo.new(duration, Enum.EasingStyle.Linear),
+        { CFrame = CFrame.new(targetPosition) }
+    )
+    tween:Play()
     return tween
 end
+```
+
+==================================================
+3.5 โมดูลข้อมูลสำคัญภายในเกม (ReplicatedStorage Data Modules)
+==================================================
+Chilli Hub ใช้คำสั่ง `require()` กับโมดูลต่อไปนี้ใน `ReplicatedStorage` เพื่อดึงสูตรคำนวณและสเตตัสไอเทม:
+1. `ReplicatedStorage.Data.Assets`             -> รายชื่อและสเตตัสของไข่และสัตว์เลี้ยงทั้งหมด
+2. `ReplicatedStorage.Data.Guards`             -> ข้อมูลการด์ จุดลาดตระเวน และระยะตรวจจับ
+3. `ReplicatedStorage.Data.Gears`              -> ข้อมูลอาวุธ/อุปกรณ์ในเกม
+4. `ReplicatedStorage.Data.Areas`              -> ข้อมูลโซนต่างๆ (Forest, Lake, Desert ฯลฯ)
+5. `ReplicatedStorage.Data.Treadmills`         -> ตารางราคาและสเตตัสการอัปเกรดลู่วิ่ง
+6. `ReplicatedStorage.Data.Bases`              -> ตารางราคาและขีดจำกัดการอัปเกรดบ้าน
+7. `ReplicatedStorage.Shared.Save`             -> ข้อมูลเซฟของผู้เล่น (เงิน, สัตว์เลี้ยงในตัว, กระเป๋า)
+8. `ReplicatedStorage.Shared.Modules.Mutations` -> อัตราคูณรายได้ของการกลายพันธุ์ (EarningsFor)
+9. `ReplicatedStorage.Shared.Util.FuseKernel`  -> สูตรคำนวณการผสมสัตว์เลี้ยงในตู้
+10. `ReplicatedStorage.Client.EggState`        -> สถานะไข่ในโลกและไข่ที่วางใน Plot
+
+================================================================================
+จบเอกสารคู่มือ - สามารถนำฟังก์ชันและ Remote ข้างต้นไปเชื่อมต่อกับ UI ใดๆ ได้ทันที!
+================================================================================
